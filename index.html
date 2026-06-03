@@ -1,12 +1,22 @@
 ﻿<!DOCTYPE html>
 <html lang="ko">
 <!--
-  PARKIE 센서 점검 웹앱
-  - GitHub Pages에서 화면을 보여주는 단일 HTML 파일입니다.
-  - Supabase DB에는 보고서/센서결과/사진URL을 저장합니다.
-  - Supabase Storage에는 실제 사진 파일을 저장합니다.
-  - localStorage에는 사용자가 작성 중인 임시 데이터를 브라우저에 저장합니다.
--->
+ * PARKIE 센서 점검 앱
+ *
+ * 주요 기능
+ * - 호기별 센서 점검 결과 입력: 각 호기에 대해 LiDAR, 카메라 등 센서별로 작업 전/후 상태를 '정상/경미한 손상/심각한 손상'으로 입력할 수 있습니다.
+ * - 사진 첨부: 각 센서별로 작업 전/후 사진을 최대 4장까지 첨부할 수 있습니다.
+ * - PDF 보고서 생성: 입력된 데이터를 기반으로 PDF 보고서를 생성하여 저장하거나 인쇄할 수 있습니다.
+ * - 데이터 저장: 입력된 점검 결과와 사진은 Supabase DB와 Storage에 저장되어 나중에 조회하거나 관리할 수 있습니다.
+ * - 모바일 최적화: 현장에서 스마트폰으로 쉽게 사용할 수 있도록 반응형 웹 디자인이 적용되어 있습니다.
+ *
+ * 만든사람
+ * - 이름: 김지훈
+ * - 이메일: hljihun98@gmail.com
+ *
+ * 만든 날짜: 2026-06-03
+ -->
+
 <head>
   
 <meta charset="UTF-8">
@@ -439,7 +449,7 @@ const PDF_FONT = "'Noto Sans KR','Malgun Gothic','Apple SD Gothic Neo',Arial,san
 // PDF mm 단위를 브라우저 px 단위로 변환하기 위한 비율입니다.
 const MM_TO_PX = 96 / 25.4;
 // 현재 화면에서 편집 중인 호기 데이터, 마지막 호기 ID, 현재 작업 단계입니다.
-let robots = [], rid = 0, activeStage = 'before';
+let robots = [], rid = 0, activeStage = '';
 // 토스트 메시지를 일정 시간 뒤 자동으로 지우기 위한 타이머입니다.
 let toastTimer = null;
 // 로고 이미지를 한 번만 불러오도록 Promise를 재사용합니다.
@@ -481,7 +491,11 @@ function getDate(){ const d=new Date(); return d.getFullYear()+pad(d.getMonth()+
 // 상단 우측 시계를 현재 시간으로 갱신합니다. 1초마다 실행됩니다.
 function updateClock(){ document.getElementById('clock').textContent=getNow(); }
 // 작업 단계 key(before 등)를 화면 표시용 한글 라벨로 바꿉니다.
-function stageLabel(k){ return (STAGES.find(s=>s.key===k)||{label:k}).label; }
+function stageLabel(k){
+  if(!k) return '단계 미선택';
+  return (STAGES.find(s=>s.key===k)||{label:k}).label;
+}
+
 // 사용자가 입력한 메모를 HTML에 안전하게 표시하기 위해 특수문자를 치환합니다.
 function escHtml(v){ return String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 // 사진을 robots 데이터 안에 저장할 때 사용하는 고유 key를 만듭니다.
@@ -489,7 +503,7 @@ function stagePhotoKey(rid,si,ai,stage){ return rid+'_'+si+'_'+ai+'_'+stage; }
 // 모든 작업 단계에 대해 센서 수만큼 기본값 배열을 만듭니다. 정상/이상, 메모 초기화에 사용합니다.
 function emptyStageMap(val){ return STAGES.reduce((o,s)=>{ o[s.key]=SENSORS.map(()=>val); return o; },{}); }
 // 새 호기 객체를 생성합니다. 사진, 센서 상태, 메모가 비어 있는 기본 상태입니다.
-function makeRobot(num,id){ return {id,num,status:'정상',photos:{},ss:emptyStageMap(null),memo:emptyStageMap('')}; }
+function makeRobot(num,id){ return {id,num,status:'',photos:{},ss:emptyStageMap(null),memo:emptyStageMap('')}; }
 // 기존 저장 데이터에 누락된 단계/센서 배열이 있으면 보정합니다. 버전 변경 호환용입니다.
 function ensureBuckets(r){
   if(!r.ss||typeof r.ss!=='object') r.ss=emptyStageMap(null);
@@ -561,8 +575,8 @@ function loadState(){
       return nr;
     }) : [];
     rid = Number(d.rid) || robots.reduce((m,r)=>Math.max(m,Number(r.id)||0),0);
-    activeStage = STAGES.some(s=>s.key===d.activeStage) ? d.activeStage : 'before';
     document.getElementById('photo_by').value = d.photo_by||'';
+    activeStage = STAGES.some(s=>s.key===d.activeStage) ? d.activeStage : '';
     if(!robots.length) robots=[makeRobot(1,++rid)];
     return true;
   }catch(e){ return false; }
@@ -603,16 +617,17 @@ function removeRobot(id){
 // 센서별 정상/이상 버튼을 토글합니다. 하나라도 이상이면 호기 전체 평가를 경미한 손상으로 자동 변경합니다.
 function toggleStatus(robId,si,val){
   const r=robots.find(x=>x.id===robId); if(!r) return;
+  if(!activeStage){ showToast('작업 단계를 선택해주세요'); return; }
   r.ss[activeStage][si] = (r.ss[activeStage][si]===val) ? null : val;
   if(r.ss[activeStage][si]!=='ng') r.memo[activeStage][si]='';
-  // 자동 반영: 현재 편집 중인 단계에서 하나라도 'ng'이면 전체 평가를 '경미한 손상'으로 올리고,
-  // 모두 'ng'이 해제되어 더 이상 이상 항목이 없으면 자동으로 '정상'으로 되돌립니다.
+  // 자동 반영: 현재 단계에서 모든 센서가 'ok'이면 전체 상태를 '정상'으로 설정합니다.
   try{
     const hasNg = Array.isArray(r.ss?.[activeStage]) && r.ss[activeStage].some(v=>v==='ng');
+    const allOk = Array.isArray(r.ss?.[activeStage]) && r.ss[activeStage].every(v=>v==='ok');
     if(hasNg){
-      if(r.status === '정상') r.status = '경미한 손상';
-    } else {
-      if(r.status === '경미한 손상') r.status = '정상';
+      r.status = '경미한 손상';
+    } else if(allOk){
+      r.status = '정상';
     }
   }catch(e){}
   render(); saveState();
@@ -620,7 +635,9 @@ function toggleStatus(robId,si,val){
 // 이상 상태일 때 입력한 메모를 해당 호기/센서/작업단계에 저장합니다.
 function updateMemo(robId,si,val){
   const r=robots.find(x=>x.id===robId);
-  if(r){ r.memo[activeStage][si]=val; saveState(); }
+  if(!r) return;
+  if(!activeStage){ showToast('작업 단계를 선택해주세요'); return; }
+  if(r.memo && r.memo[activeStage]){ r.memo[activeStage][si]=val; saveState(); }
 }
 // robots 데이터를 기준으로 화면의 모든 호기 카드, 센서 카드, 사진 슬롯을 다시 그립니다.
 function render(){
@@ -633,10 +650,12 @@ function render(){
     const done = SENSORS.reduce((acc,s,si)=>acc+getAnglesForSensor(s).filter((_,ai)=>r.photos[stagePhotoKey(r.id,si,ai,activeStage)]).length,0);
     const pct = Math.round(done/total*100)||0;
     const sensorsHTML = SENSORS.map((s,si)=>{
-      const st = r.ss[activeStage][si];
+      const ssArr = Array.isArray(r.ss?.[activeStage]) ? r.ss[activeStage] : SENSORS.map(()=>null);
+      const memoArr = Array.isArray(r.memo?.[activeStage]) ? r.memo[activeStage] : SENSORS.map(()=>'');
+      const st = ssArr[si];
       const angles = getAnglesForSensor(s);
       const cnt = angles.filter((_,ai)=>r.photos[stagePhotoKey(r.id,si,ai,activeStage)]).length;
-      const memoVal = escHtml(r.memo[activeStage][si]||'');
+      const memoVal = escHtml(memoArr[si]||'');
       const slots = angles.map((a,ai)=>{
         const key = stagePhotoKey(r.id,si,ai,activeStage);
         const img = r.photos[key];
@@ -648,10 +667,10 @@ function render(){
 
     const div=document.createElement('div');
     div.className='rcard'; div.dataset.rid=r.id;
-    div.innerHTML='<div class="rcard-hd"><div class="hd-l"><span class="hd-tag">호기</span><input class="n-inp" type="number" value="'+r.num+'" min="1" onchange="robots['+ri+'].num=Number(this.value)||1;updateMeta();saveState()"><select class="fi rstatus" onchange="robots['+ri+'].status=this.value;saveState();render()"><option value="정상">정상</option><option value="경미한 손상">경미한 손상</option><option value="교체 필요">교체 필요</option><option value="긴급 점검">긴급 점검</option></select></div><div class="hd-r"><span class="prog-lbl">'+done+'/'+total+' · '+pct+'%</span>'+(robots.length>1?'<button class="del-btn" onclick="removeRobot('+r.id+')" aria-label="삭제">✕</button>':'')+'</div></div><div class="prog-track"><div class="prog-fill" style="width:'+pct+'%"></div></div><div class="stage-row"><div class="stage-row-hd"><span class="stage-name">'+stageLabel(activeStage)+'</span><span class="stage-note">현재 단계 편집 중</span></div>'+sensorsHTML+'</div>';
+    div.innerHTML='<div class="rcard-hd"><div class="hd-l"><span class="hd-tag">호기</span><input class="n-inp" type="number" value="'+r.num+'" min="1" onchange="robots['+ri+'].num=Number(this.value)||1;updateMeta();saveState()"><select class="fi rstatus" onchange="robots['+ri+'].status=this.value;saveState();render()"><option value="">상태 선택</option><option value="정상">정상</option><option value="경미한 손상">경미한 손상</option><option value="교체 필요">교체 필요</option><option value="긴급 점검">긴급 점검</option></select></div><div class="hd-r"><span class="prog-lbl">'+done+'/'+total+' · '+pct+'%</span>'+(robots.length>1?'<button class="del-btn" onclick="removeRobot('+r.id+')" aria-label="삭제">✕</button>':'')+'</div></div><div class="prog-track"><div class="prog-fill" style="width:'+pct+'%"></div></div><div class="stage-row"><div class="stage-row-hd"><span class="stage-name">'+stageLabel(activeStage)+'</span><span class="stage-note">현재 단계 편집 중</span></div>'+sensorsHTML+'</div>';
     c.appendChild(div);
     const statusSelect = div.querySelector('.rstatus');
-    if(statusSelect) statusSelect.value = r.status || '??';
+    if(statusSelect) statusSelect.value = r.status || '';
   });
 }
 // 사용자가 업로드한 사진을 브라우저에서 JPEG로 압축/리사이즈하여 저장 용량을 줄입니다.
@@ -810,8 +829,61 @@ async function pdfAddSection(doc,r,stage,startY){
   }
   return y+4;
 }
+function buildPdfConfirmationMessage(){
+  const stageText = stageLabel(activeStage);
+  const issues = robots.map(r => {
+    const badSensors = SENSORS.map((sensor, si) => {
+      const status = r.ss[activeStage]?.[si];
+      if(status === 'ng') return sensor.name;
+      return null;
+    }).filter(Boolean);
+    return badSensors.length ? `${r.num}호기: ${badSensors.join(', ')}` : null;
+  }).filter(Boolean);
+
+  let message = `다음 정보를 확인합니다.\n\n\n촬영 단계: ${stageText}\n`;
+  if(issues.length){
+    message += `\n이상 항목:\n` + issues.map(i => `- ${i}`).join('\n');
+  } else {
+    message += '\n현재 모든 센서 이상 없습니다.';
+  }
+  message += '\n\n이대로 PDF를 생성하시겠습니까?';
+  return message;
+}
+
 // 'PDF 생성' 버튼 기능입니다. 현재 화면 데이터를 PDF로 만들어 다운로드합니다.
 async function generatePDF(){
+  const photoBy = document.getElementById('photo_by').value.trim();
+  if(!photoBy){
+    alert('촬영자 이름을 입력해주세요.\n\nPDF 생성을 위해서는 촬영자 정보가 필수입니다.');
+    showToast('촬영자 이름 입력 필요');
+    return;
+  }
+  if(!activeStage || !STAGES.some(s=>s.key===activeStage)){
+    alert('촬영 단계를 선택해주세요.\n\nPDF 생성을 위해서는 촬영 단계 선택이 필수입니다.');
+    showToast('촬영 단계 선택 필요');
+    return;
+  }
+
+  const uncheckedItems = [];
+  robots.forEach(r => {
+    SENSORS.forEach((sensor, si) => {
+      if(!r.ss[activeStage]?.[si]){
+        uncheckedItems.push(`${r.num}호기 ${sensor.name}`);
+      }
+    });
+  });
+  if(uncheckedItems.length){
+    const preview = uncheckedItems.slice(0, 6).join('\n');
+    alert(`미확인 항목이 ${uncheckedItems.length}개 있습니다.\n먼저 완료해주세요.\n\n${preview}${uncheckedItems.length > 6 ? '\n...' : ''}`);
+    showToast('미확인 항목을 먼저 입력해주세요.');
+    return;
+  }
+
+  const confirmMessage = buildPdfConfirmationMessage();
+  if(!confirm(confirmMessage)){
+    showToast('PDF 생성이 취소되었습니다.');
+    return;
+  }
   try {
     const now=getNow();
     document.getElementById('confirmed_at').textContent=now;
@@ -874,7 +946,7 @@ function resetAll(){
     // Clear data structures
     robots = [makeRobot(1,1)];
     rid = 1;
-    activeStage = 'before';
+    activeStage = '';
     document.getElementById('photo_by').value = '';
     // Clear caches if present
     try{ imageInfoCache && imageInfoCache.clear(); }catch(e){}
@@ -892,7 +964,8 @@ function resetAll(){
 function boot(){
   document.getElementById('tb-logo').src=LOGO_SRC;
   const loaded=loadState();
-  if(!loaded){ robots=[makeRobot(1,1)]; rid=1; }
+  if(!loaded){ robots=[makeRobot(1,1)]; rid=1; activeStage = ''; }
+  if(activeStage && !STAGES.some(s=>s.key===activeStage)) activeStage = '';
   document.querySelectorAll('#stage-switch .tbtn').forEach(btn=>btn.addEventListener('click',()=>setStage(btn.dataset.stage)));
   setInterval(updateClock,1000);
   updateClock(); updateMeta(); render(); saveState();

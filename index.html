@@ -99,6 +99,38 @@ input.n-inp:focus{border-color:#0099CC}
   const SUPABASE_URL = 'https://nacmejmqwugerrnyvvtc.supabase.co';
   const SUPABASE_ANON_KEY = 'sb_publishable_hL9odeGCk9D1YJnnHBUCWA_a7T8eXQQ';
   const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+
+  function formatSupabaseError(error){
+    if(!error) return '알 수 없는 오류';
+    const parts = [];
+    if(error.message) parts.push(error.message);
+    if(error.code) parts.push('code=' + error.code);
+    if(error.details) parts.push('details=' + error.details);
+    if(error.hint) parts.push('hint=' + error.hint);
+    if(!parts.length){
+      try{ return JSON.stringify(error); }catch(e){ return String(error); }
+    }
+    return parts.join('\n');
+  }
+
+  async function testSupabaseConnection(){
+    try{
+      showToast('Supabase 연결 테스트 중...');
+      const { data, error } = await supabaseClient
+        .from('inspection_reports')
+        .select('id')
+        .limit(1);
+      if(error) throw error;
+      showToast('✓ Supabase 연결 성공');
+      alert('Supabase 연결 성공!\ninspection_reports 테이블 조회가 가능합니다.');
+      console.log('Supabase 연결 테스트 결과:', data);
+    }catch(error){
+      console.error('Supabase 연결 테스트 실패:', error);
+      showToast('Supabase 연결 테스트 실패');
+      alert('Supabase 연결 테스트 실패:\n' + formatSupabaseError(error));
+    }
+  }
   const SUPABASE_PHOTO_BUCKET = 'inspection-photos';
 
   function safeFileName(value){
@@ -139,13 +171,17 @@ input.n-inp:focus{border-color:#0099CC}
   }
 
   async function saveToServer() {
+    const inspector = document.getElementById('photo_by').value || '';
+    const statusText = robots.map(r => `${r.num}호기 ${r.status}`).join(' / ');
+    let report = null;
+    let step = '시작';
+
     try{
-      const inspector = document.getElementById('photo_by').value || '';
-      const statusText = robots.map(r => `${r.num}호기 ${r.status}`).join(' / ');
       showToast('서버 저장 중...');
 
       // 1) 보고서 기본 정보 저장
-      const { data: report, error: reportError } = await supabaseClient
+      step = '보고서 기본정보 저장';
+      const reportResult = await supabaseClient
         .from('inspection_reports')
         .insert({
           device_name: 'PARKIE',
@@ -156,9 +192,13 @@ input.n-inp:focus{border-color:#0099CC}
         .select()
         .single();
 
-      if (reportError) throw reportError;
+      if (reportResult.error) {
+        throw new Error(`[${step}]\n${formatSupabaseError(reportResult.error)}`);
+      }
+      report = reportResult.data;
 
       // 2) 호기별 센서 상태/메모 저장
+      step = '센서 결과 저장';
       const itemRows = [];
       robots.forEach(r => {
         SENSORS.forEach((sensor, si) => {
@@ -173,13 +213,16 @@ input.n-inp:focus{border-color:#0099CC}
       });
 
       if(itemRows.length){
-        const { error: itemError } = await supabaseClient
+        const itemResult = await supabaseClient
           .from('inspection_items')
           .insert(itemRows);
-        if(itemError) throw itemError;
+        if(itemResult.error) {
+          throw new Error(`[${step}]\n${formatSupabaseError(itemResult.error)}`);
+        }
       }
 
       // 3) 사진은 Storage에 업로드 후 URL만 DB에 저장
+      step = '사진 업로드 및 URL 저장';
       const photoRows = [];
       for(const r of robots){
         for(let si=0; si<SENSORS.length; si++){
@@ -192,13 +235,18 @@ input.n-inp:focus{border-color:#0099CC}
             const dataUrl = r.photos?.[key];
             if(!dataUrl) continue;
 
-            const publicUrl = await uploadPhotoToSupabase(
-              report.id,
-              Number(r.num) || 1,
-              sensor.name,
-              angle,
-              dataUrl
-            );
+            let publicUrl = '';
+            try{
+              publicUrl = await uploadPhotoToSupabase(
+                report.id,
+                Number(r.num) || 1,
+                sensor.name,
+                angle,
+                dataUrl
+              );
+            }catch(uploadError){
+              throw new Error(`[사진 Storage 업로드]\n${formatSupabaseError(uploadError)}`);
+            }
 
             photoRows.push({
               report_id: report.id,
@@ -212,10 +260,12 @@ input.n-inp:focus{border-color:#0099CC}
       }
 
       if(photoRows.length){
-        const { error: photoError } = await supabaseClient
+        const photoResult = await supabaseClient
           .from('inspection_photos')
           .insert(photoRows);
-        if(photoError) throw photoError;
+        if(photoResult.error) {
+          throw new Error(`[사진 URL DB 저장]\n${formatSupabaseError(photoResult.error)}`);
+        }
       }
 
       showToast('✓ 서버 저장 완료');
@@ -224,9 +274,10 @@ input.n-inp:focus{border-color:#0099CC}
     }catch(error){
       console.error('서버 저장 실패:', error);
       showToast('서버 저장 실패');
-      alert('서버 저장 실패: ' + (error.message || '알 수 없는 오류'));
+      alert('서버 저장 실패\n\n실패 단계: ' + step + '\n\n' + (error.message || formatSupabaseError(error)));
     }
   }
+
 </script>
 </head>
 

@@ -135,9 +135,11 @@ input.n-inp:focus{border-color:#0099CC}
 
   function safeFileName(value){
     return String(value || '')
-      .replace(/[^a-zA-Z0-9가-힣_-]/g, '_')
+      .normalize('NFKD')
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
       .replace(/_+/g, '_')
-      .slice(0, 80);
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 80) || 'file';
   }
 
   function dataUrlToBlob(dataUrl){
@@ -152,7 +154,7 @@ input.n-inp:focus{border-color:#0099CC}
 
   async function uploadPhotoToSupabase(reportId, robotNum, sensorName, angle, dataUrl){
     const blob = dataUrlToBlob(dataUrl);
-    const filePath = `${reportId}/${robotNum}호기_${safeFileName(sensorName)}_${safeFileName(angle)}_${Date.now()}.jpg`;
+    const filePath = `${reportId}/robot_${Number(robotNum) || 1}_${safeFileName(sensorName)}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`;
 
     const { error: uploadError } = await supabaseClient.storage
       .from(SUPABASE_PHOTO_BUCKET)

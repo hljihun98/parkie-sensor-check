@@ -475,6 +475,8 @@ function getImageInfo(src){
   if(imageInfoCache.has(src)) return imageInfoCache.get(src);
   const p = new Promise(resolve => {
     const img = new Image();
+    // Allow cross-origin image loading so remote images can be read as data for PDF
+    img.crossOrigin = 'anonymous';
     img.onload = () => resolve({w:img.naturalWidth||img.width||1,h:img.naturalHeight||img.height||1});
     img.onerror = () => resolve({w:1,h:1});
     img.src = src;
@@ -808,17 +810,27 @@ async function pdfAddSection(doc,r,stage,startY){
     for(let ai=0;ai<4;ai++){
       doc.setDrawColor(180,185,195); doc.setLineWidth(0.25);
       doc.rect(rx,y,C.photo,rowH);
-      const img=ai<angles.length ? r.photos[stagePhotoKey(r.id,si,ai,stage)] : null;
-      if(img){
+      const imgSrc = ai<angles.length ? r.photos[stagePhotoKey(r.id,si,ai,stage)] : null;
+      if(imgSrc){
         try{
-          const info=await getImageInfo(img);
+          // Ensure we have a data URL (convert remote URLs to data URLs to avoid CORS issues)
+          const dataUrl = await ensureDataUrl(imgSrc) || imgSrc;
+          const info = await getImageInfo(dataUrl);
           const maxW=C.photo-2, maxH=rowH-2;
-          const ratio=info.w/info.h;
-          let w=maxW, h=maxW/ratio;
+          const ratio = (info.w||1)/(info.h||1);
+          let w = maxW, h = maxW/ratio;
           if(h>maxH){ h=maxH; w=maxH*ratio; }
-          const ix=rx+(C.photo-w)/2, iy=y+(rowH-h)/2;
-          doc.addImage(img,'JPEG',ix,iy,w,h,undefined,'FAST');
-        }catch(e){}
+          const ix = rx + (C.photo - w)/2, iy = y + (rowH - h)/2;
+          // Choose image format based on data URL MIME type
+          let imgFormat = 'JPEG';
+          try{
+            if(String(dataUrl).startsWith('data:image/png')) imgFormat = 'PNG';
+          }catch(e){}
+          doc.addImage(dataUrl, imgFormat, ix, iy, w, h, undefined, 'FAST');
+        }catch(e){
+          doc.setFillColor(235,238,242); doc.rect(rx,y,C.photo,rowH,'F');
+          pdfText(doc,'—',rx+C.photo/2,y+rowH/2,{align:'center',valign:'middle',size:6,color:[190,190,190]});
+        }
       } else {
         doc.setFillColor(235,238,242); doc.rect(rx,y,C.photo,rowH,'F');
         pdfText(doc,'—',rx+C.photo/2,y+rowH/2,{align:'center',valign:'middle',size:6,color:[190,190,190]});
@@ -998,12 +1010,39 @@ function getImageElement(src){
   if(imageElementCache.has(src)) return imageElementCache.get(src);
   const p = new Promise(resolve => {
     const img = new Image();
+    // Allow cross-origin image loading so remote images can be drawn on canvas
+    img.crossOrigin = 'anonymous';
     img.onload = () => resolve(img);
     img.onerror = () => resolve(null);
     img.src = src;
   });
   imageElementCache.set(src, p);
   return p;
+}
+
+// Fetch a remote image URL and convert to a data URL (returns null on failure)
+async function fetchImageAsDataUrl(url){
+  try{
+    const res = await fetch(url, {mode: 'cors'});
+    if(!res.ok) return null;
+    const blob = await res.blob();
+    return await new Promise((resolve,reject)=>{
+      const fr = new FileReader();
+      fr.onload = ()=>resolve(fr.result);
+      fr.onerror = reject;
+      fr.readAsDataURL(blob);
+    });
+  }catch(e){
+    return null;
+  }
+}
+
+// Ensure the provided src is a data URL. If it's remote, try to fetch and convert it.
+async function ensureDataUrl(src){
+  if(!src) return null;
+  if(String(src).startsWith('data:')) return src;
+  if(String(src).startsWith('blob:')) return src;
+  return await fetchImageAsDataUrl(src);
 }
 
 // 캔버스 내용을 JPEG 바이트 배열로 변환합니다.
